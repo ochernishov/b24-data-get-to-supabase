@@ -197,6 +197,69 @@ class Bitrix24ETL:
             self.log_sync_end(sync_id, 'failed', 0, str(e))
             return 0
     
+    def extract_companies(self) -> int:
+        """Извлечь компании"""
+        logger.info("📥 Extracting companies...")
+        sync_id = self.log_sync_start('companies')
+
+        processed = 0
+        try:
+            params = {}
+
+            if SYNC_MODE == 'incremental':
+                cutoff_time = (datetime.utcnow() - timedelta(hours=HOURS_BACK)).isoformat()
+                params['filter'] = {'>DATE_MODIFY': cutoff_time}
+
+            companies = self.bitrix_request('crm.company.list', params)
+
+            batch = []
+
+            for company in companies:
+                # EMAIL и PHONE приходят как массивы
+                email_value = None
+                if company.get('EMAIL') and isinstance(company['EMAIL'], list) and len(company['EMAIL']) > 0:
+                    email_value = company['EMAIL'][0].get('VALUE')
+
+                phone_value = None
+                if company.get('PHONE') and isinstance(company['PHONE'], list) and len(company['PHONE']) > 0:
+                    phone_value = company['PHONE'][0].get('VALUE')
+
+                company_data = {
+                    'id': self.safe_int(company['ID']),
+                    'title': company.get('TITLE') or None,
+                    'company_type': company.get('COMPANY_TYPE') or None,
+                    'email': email_value,
+                    'phone': phone_value,
+                    'web': company.get('WEB') or None,
+                    'address': company.get('ADDRESS') or None,
+                    'date_create': self.safe_datetime(company.get('DATE_CREATE')),
+                    'date_modify': self.safe_datetime(company.get('DATE_MODIFY')),
+                    'assigned_by_id': self.safe_int(company.get('ASSIGNED_BY_ID')),
+                    'created_by_id': self.safe_int(company.get('CREATED_BY_ID')),
+                    'raw_data': company
+                }
+
+                batch.append(company_data)
+                processed += 1
+
+                if len(batch) >= 50:
+                    self.supabase.table('companies').upsert(batch).execute()
+                    logger.info(f"  📊 Companies extracted: {processed}")
+                    batch = []
+
+            # Вставить остаток
+            if batch:
+                self.supabase.table('companies').upsert(batch).execute()
+
+            logger.info(f"  ✅ Companies extracted: {processed}")
+            self.log_sync_end(sync_id, 'completed', processed)
+            return processed
+
+        except Exception as e:
+            logger.error(f"  ❌ Error extracting companies: {e}")
+            self.log_sync_end(sync_id, 'failed', processed)
+            return processed
+
     def extract_contacts(self) -> int:
         """Извлечь контакты"""
         logger.info("📥 Extracting contacts...")
@@ -476,10 +539,11 @@ class Bitrix24ETL:
         logger.info("=" * 80)
         logger.info("🔄 FULL SYNC STARTED")
         logger.info("=" * 80)
-        
+
         start_time = time.time()
-        
+
         managers_count = self.extract_managers()
+        companies_count = self.extract_companies()
         contacts_count = self.extract_contacts()
         deals_count = self.extract_deals()
         activities_count = self.extract_activities()
@@ -492,6 +556,7 @@ class Bitrix24ETL:
         logger.info("✅ FULL SYNC COMPLETED")
         logger.info(f"   Duration: {duration:.2f}s")
         logger.info(f"   Managers: {managers_count}")
+        logger.info(f"   Companies: {companies_count}")
         logger.info(f"   Contacts: {contacts_count}")
         logger.info(f"   Deals: {deals_count}")
         logger.info(f"   Activities: {activities_count}")
