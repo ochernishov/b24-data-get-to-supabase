@@ -42,14 +42,37 @@ if not all([BITRIX_WEBHOOK, SUPABASE_URL, SUPABASE_KEY]):
 
 class Bitrix24ETL:
     """ETL сервис для выгрузки данных из Bitrix24 в Supabase"""
-    
+
     def __init__(self):
         self.bitrix_url = BITRIX_WEBHOOK
         self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         self.rate_limit_delay = 0.5
+        self.created_managers = set()  # Кэш уже созданных менеджеров
         
     # ==================== УТИЛИТЫ ====================
-    
+
+    def ensure_manager_exists(self, user_id: int):
+        """Создать менеджера если его нет в базе (on-the-fly)"""
+        if not user_id or user_id in self.created_managers:
+            return
+
+        try:
+            manager_data = {
+                'id': user_id,
+                'name': f'User {user_id}',
+                'last_name': None,
+                'email': None,
+                'work_position': None,
+                'personal_phone': None,
+                'personal_mobile': None,
+                'raw_data': {'ID': user_id, 'note': 'Auto-created on-the-fly'}
+            }
+            self.supabase.table('managers').upsert(manager_data).execute()
+            self.created_managers.add(user_id)
+        except Exception as e:
+            # Игнорируем ошибки (возможно уже есть в базе)
+            pass
+
     @staticmethod
     def safe_int(value: Any, default: Optional[int] = None) -> Optional[int]:
         """Безопасное преобразование в int"""
@@ -163,97 +186,6 @@ class Bitrix24ETL:
     
     # ==================== ИЗВЛЕЧЕНИЕ ДАННЫХ ====================
     
-    def collect_user_ids_from_deals(self) -> set:
-        """
-        Собрать ID пользователей из сделок (только первые 1000 для скорости)
-        1000 сделок достаточно чтобы найти всех активных менеджеров
-        """
-        user_ids = set()
-
-        # Ограничиваем выборку для скорости (не грузим все сделки)
-        url = f"{self.bitrix_url}crm.deal.list.json"
-        params = {'start': 0, 'select': ['ASSIGNED_BY_ID', 'CREATED_BY_ID', 'MODIFY_BY_ID']}
-
-        for i in range(20):  # Максимум 20 * 50 = 1000 сделок
-            try:
-                time.sleep(self.rate_limit_delay)
-                response = requests.get(url, params=params, timeout=30)
-                response.raise_for_status()
-                data = response.json()
-
-                if 'result' not in data or not data['result']:
-                    break
-
-                for deal in data['result']:
-                    if deal.get('ASSIGNED_BY_ID'):
-                        user_ids.add(self.safe_int(deal['ASSIGNED_BY_ID']))
-                    if deal.get('CREATED_BY_ID'):
-                        user_ids.add(self.safe_int(deal['CREATED_BY_ID']))
-                    if deal.get('MODIFY_BY_ID'):
-                        user_ids.add(self.safe_int(deal['MODIFY_BY_ID']))
-
-                if len(data['result']) < 50:
-                    break
-
-                params['start'] += 50
-
-            except Exception as e:
-                logger.error(f"Error collecting user IDs: {e}")
-                break
-
-        return user_ids
-
-    def extract_managers(self) -> int:
-        """
-        Извлечь менеджеров (обходной путь для 401 на user.get)
-        Собираем уникальные ID из deals, создаём заглушки
-        """
-        logger.info("📥 Extracting managers from deals...")
-        sync_id = self.log_sync_start('managers')
-
-        try:
-            # Собираем ID пользователей из сделок
-            user_ids = self.collect_user_ids_from_deals()
-            logger.info(f"  📊 Found {len(user_ids)} unique user IDs in deals")
-
-            processed = 0
-            batch = []
-
-            for user_id in user_ids:
-                if not user_id:
-                    continue
-
-                # Создаём минимальную запись (только ID)
-                user_data = {
-                    'id': user_id,
-                    'name': f'User {user_id}',  # Placeholder
-                    'last_name': None,
-                    'email': None,
-                    'work_position': None,
-                    'personal_phone': None,
-                    'personal_mobile': None,
-                    'raw_data': {'ID': user_id, 'note': 'Auto-created from deals'}
-                }
-
-                batch.append(user_data)
-                processed += 1
-
-                if len(batch) >= 50:
-                    self.supabase.table('managers').upsert(batch).execute()
-                    batch = []
-
-            # Вставить остаток
-            if batch:
-                self.supabase.table('managers').upsert(batch).execute()
-
-            logger.info(f"  ✅ Managers extracted: {processed}")
-            self.log_sync_end(sync_id, 'completed', processed)
-            return processed
-
-        except Exception as e:
-            logger.error(f"  ❌ Error extracting managers: {e}")
-            self.log_sync_end(sync_id, 'failed', 0, str(e))
-            return 0
     
     def extract_companies(self) -> int:
         """Извлечь компании"""
@@ -273,6 +205,10 @@ class Bitrix24ETL:
             batch = []
 
             for company in companies:
+                # Создать менеджеров если их нет в базе
+                self.ensure_manager_exists(self.safe_int(company.get('ASSIGNED_BY_ID')))
+                self.ensure_manager_exists(self.safe_int(company.get('CREATED_BY_ID')))
+
                 # EMAIL и PHONE приходят как массивы
                 email_value = None
                 if company.get('EMAIL') and isinstance(company['EMAIL'], list) and len(company['EMAIL']) > 0:
@@ -411,6 +347,11 @@ class Bitrix24ETL:
             batch = []
             
             for deal in deals:
+                # Создать менеджеров если их нет в базе
+                self.ensure_manager_exists(self.safe_int(deal.get('ASSIGNED_BY_ID')))
+                self.ensure_manager_exists(self.safe_int(deal.get('CREATED_BY_ID')))
+                self.ensure_manager_exists(self.safe_int(deal.get('MODIFY_BY_ID')))
+
                 deal_data = {
                     'id': self.safe_int(deal['ID']),
                     'title': deal.get('TITLE') or None,
@@ -478,11 +419,16 @@ class Bitrix24ETL:
             batch = []
             
             for activity in activities:
+                # Создать менеджеров если их нет в базе
+                self.ensure_manager_exists(self.safe_int(activity.get('RESPONSIBLE_ID')))
+                self.ensure_manager_exists(self.safe_int(activity.get('AUTHOR_ID')))
+                self.ensure_manager_exists(self.safe_int(activity.get('EDITOR_ID')))
+
                 # Длительность звонка
                 call_duration = None
                 if activity.get('PROVIDER_ID') == 'VOXIMPLANT':
                     call_duration = self.safe_int(activity.get('RESULT_VALUE'))
-                
+
                 activity_data = {
                     'id': self.safe_int(activity['ID']),
                     'owner_id': self.safe_int(activity.get('OWNER_ID')),
@@ -593,18 +539,22 @@ class Bitrix24ETL:
     # ==================== ОСНОВНЫЕ МЕТОДЫ ====================
     
     def full_sync(self):
-        """Полная синхронизация всех данных"""
+        """
+        Полная синхронизация всех данных
+        Менеджеры создаются автоматически on-the-fly при загрузке companies/deals/activities
+        """
         logger.info("=" * 80)
         logger.info("🔄 FULL SYNC STARTED")
         logger.info("=" * 80)
 
         start_time = time.time()
 
-        managers_count = self.extract_managers()
+        # Managers создаются автоматически в процессе загрузки
         companies_count = self.extract_companies()
         contacts_count = self.extract_contacts()
         deals_count = self.extract_deals()
         activities_count = self.extract_activities()
+        managers_count = len(self.created_managers)
         
         self.calculate_patterns()
         
