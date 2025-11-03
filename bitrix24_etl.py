@@ -163,35 +163,68 @@ class Bitrix24ETL:
     
     # ==================== ИЗВЛЕЧЕНИЕ ДАННЫХ ====================
     
+    def collect_user_ids_from_deals(self) -> set:
+        """Собрать все ID пользователей из сделок"""
+        user_ids = set()
+        deals = self.bitrix_request('crm.deal.list')
+
+        for deal in deals:
+            if deal.get('ASSIGNED_BY_ID'):
+                user_ids.add(self.safe_int(deal['ASSIGNED_BY_ID']))
+            if deal.get('CREATED_BY_ID'):
+                user_ids.add(self.safe_int(deal['CREATED_BY_ID']))
+            if deal.get('MODIFY_BY_ID'):
+                user_ids.add(self.safe_int(deal['MODIFY_BY_ID']))
+
+        return user_ids
+
     def extract_managers(self) -> int:
-        """Извлечь пользователей (менеджеров)"""
-        logger.info("📥 Extracting managers...")
+        """
+        Извлечь менеджеров (обходной путь для 401 на user.get)
+        Собираем уникальные ID из deals, создаём заглушки
+        """
+        logger.info("📥 Extracting managers from deals...")
         sync_id = self.log_sync_start('managers')
-        
+
         try:
-            # БЕЗ ФИЛЬТРА - берём всех пользователей
-            users = self.bitrix_request('user.get')
-            
+            # Собираем ID пользователей из сделок
+            user_ids = self.collect_user_ids_from_deals()
+            logger.info(f"  📊 Found {len(user_ids)} unique user IDs in deals")
+
             processed = 0
-            for user in users:
+            batch = []
+
+            for user_id in user_ids:
+                if not user_id:
+                    continue
+
+                # Создаём минимальную запись (только ID)
                 user_data = {
-                    'id': self.safe_int(user['ID']),
-                    'name': user.get('NAME'),
-                    'last_name': user.get('LAST_NAME'),
-                    'email': user.get('EMAIL'),
-                    'work_position': user.get('WORK_POSITION'),
-                    'personal_phone': user.get('PERSONAL_PHONE'),
-                    'personal_mobile': user.get('PERSONAL_MOBILE'),
-                    'raw_data': user
+                    'id': user_id,
+                    'name': f'User {user_id}',  # Placeholder
+                    'last_name': None,
+                    'email': None,
+                    'work_position': None,
+                    'personal_phone': None,
+                    'personal_mobile': None,
+                    'raw_data': {'ID': user_id, 'note': 'Auto-created from deals'}
                 }
-                
-                self.supabase.table('managers').upsert(user_data).execute()
+
+                batch.append(user_data)
                 processed += 1
-            
+
+                if len(batch) >= 50:
+                    self.supabase.table('managers').upsert(batch).execute()
+                    batch = []
+
+            # Вставить остаток
+            if batch:
+                self.supabase.table('managers').upsert(batch).execute()
+
             logger.info(f"  ✅ Managers extracted: {processed}")
             self.log_sync_end(sync_id, 'completed', processed)
             return processed
-            
+
         except Exception as e:
             logger.error(f"  ❌ Error extracting managers: {e}")
             self.log_sync_end(sync_id, 'failed', 0, str(e))
