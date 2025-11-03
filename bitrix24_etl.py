@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bitrix24 ETL Service
+Bitrix24 ETL Service - ФИНАЛЬНАЯ ВЕРСИЯ
 Извлекает данные из Bitrix24 CRM и загружает в Supabase PostgreSQL
 """
 
@@ -25,10 +25,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурация из переменных окружения
-BITRIX_WEBHOOK = os.getenv('BITRIX_WEBHOOK')
+BITRIX_WEBHOOK = os.getenv('BITRIX_WEBHOOK', '').rstrip('/') + '/'  # Гарантируем слеш в конце
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-SYNC_MODE = os.getenv('SYNC_MODE', 'full')  # full или incremental
+SYNC_MODE = os.getenv('SYNC_MODE', 'full')
 HOURS_BACK = int(os.getenv('HOURS_BACK', '24'))
 
 # Проверка обязательных переменных
@@ -46,7 +46,7 @@ class Bitrix24ETL:
     def __init__(self):
         self.bitrix_url = BITRIX_WEBHOOK
         self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        self.rate_limit_delay = 0.5  # Задержка между запросами к API
+        self.rate_limit_delay = 0.5
         
     # ==================== УТИЛИТЫ ====================
     
@@ -56,7 +56,7 @@ class Bitrix24ETL:
         if value is None or value == '' or value == 'null':
             return default
         try:
-            return int(float(value))  # Сначала в float, потом в int (на случай "123.0")
+            return int(float(value))
         except (ValueError, TypeError):
             return default
     
@@ -76,9 +76,7 @@ class Bitrix24ETL:
         if not value or value == '' or value == 'null':
             return None
         try:
-            # Битрикс возвращает даты в формате "2023-01-15T10:30:00+03:00"
             if isinstance(value, str):
-                # Убираем 'Z' и заменяем на +00:00 если есть
                 value = value.replace('Z', '+00:00')
                 dt = datetime.fromisoformat(value)
                 return dt.isoformat()
@@ -124,7 +122,6 @@ class Bitrix24ETL:
                 
                 all_results.extend(results)
                 
-                # Проверка есть ли еще данные
                 total = data.get('total', 0)
                 if len(all_results) >= total or len(results) < 50:
                     break
@@ -172,9 +169,8 @@ class Bitrix24ETL:
         sync_id = self.log_sync_start('managers')
         
         try:
-            users = self.bitrix_request('user.get', {
-                'filter': {'ACTIVE': True}
-            })
+            # БЕЗ ФИЛЬТРА - берём всех пользователей
+            users = self.bitrix_request('user.get')
             
             processed = 0
             for user in users:
@@ -206,30 +202,29 @@ class Bitrix24ETL:
         logger.info("📥 Extracting contacts...")
         sync_id = self.log_sync_start('contacts')
         
+        processed = 0
         try:
-            # Параметры запроса с явным указанием полей
-            params = {
-                'select': [
-                    'ID', 'NAME', 'LAST_NAME', 'SECOND_NAME',
-                    'EMAIL', 'PHONE', 'POST', 'BIRTHDATE',
-                    'DATE_CREATE', 'DATE_MODIFY',
-                    'COMPANY_ID', 'ASSIGNED_BY_ID', 'CREATED_BY_ID',
-                    'SOURCE_ID', 'SOURCE_DESCRIPTION'
-                ]
-            }
+            params = {}
             
-            # Для incremental sync - только обновленные за последние N часов
             if SYNC_MODE == 'incremental':
                 cutoff_time = (datetime.utcnow() - timedelta(hours=HOURS_BACK)).isoformat()
                 params['filter'] = {'>DATE_MODIFY': cutoff_time}
             
             contacts = self.bitrix_request('crm.contact.list', params)
             
-            processed = 0
             batch = []
             
             for contact in contacts:
-                # Собираем полное имя из частей
+                # EMAIL и PHONE приходят как массивы
+                email_value = None
+                if contact.get('EMAIL') and isinstance(contact['EMAIL'], list) and len(contact['EMAIL']) > 0:
+                    email_value = contact['EMAIL'][0].get('VALUE')
+                
+                phone_value = None
+                if contact.get('PHONE') and isinstance(contact['PHONE'], list) and len(contact['PHONE']) > 0:
+                    phone_value = contact['PHONE'][0].get('VALUE')
+                
+                # Собираем полное имя
                 name_parts = [
                     contact.get('NAME'),
                     contact.get('SECOND_NAME'),
@@ -243,8 +238,8 @@ class Bitrix24ETL:
                     'last_name': contact.get('LAST_NAME') or None,
                     'second_name': contact.get('SECOND_NAME') or None,
                     'full_name': full_name,
-                    'email': contact.get('EMAIL', [{}])[0].get('VALUE') if contact.get('EMAIL') else None,
-                    'phone': contact.get('PHONE', [{}])[0].get('VALUE') if contact.get('PHONE') else None,
+                    'email': email_value,
+                    'phone': phone_value,
                     'post': contact.get('POST') or None,
                     'birthdate': self.safe_datetime(contact.get('BIRTHDATE')),
                     'date_create': self.safe_datetime(contact.get('DATE_CREATE')),
@@ -260,13 +255,11 @@ class Bitrix24ETL:
                 batch.append(contact_data)
                 processed += 1
                 
-                # Батчевая вставка каждые 50 записей
                 if len(batch) >= 50:
                     self.supabase.table('contacts').upsert(batch).execute()
                     logger.info(f"  📊 Contacts extracted: {processed}")
                     batch = []
             
-            # Вставить остатки
             if batch:
                 self.supabase.table('contacts').upsert(batch).execute()
             
@@ -286,18 +279,7 @@ class Bitrix24ETL:
         
         processed = 0
         try:
-            params = {
-                'select': [
-                    'ID', 'TITLE', 'STAGE_ID', 'STAGE_SEMANTIC_ID',
-                    'PROBABILITY', 'OPPORTUNITY', 'CURRENCY_ID',
-                    'IS_MANUAL_OPPORTUNITY', 'TAX_VALUE',
-                    'COMPANY_ID', 'CONTACT_ID', 'ASSIGNED_BY_ID',
-                    'CREATED_BY_ID', 'CLOSED', 'BEGINDATE', 'CLOSEDATE',
-                    'DATE_CREATE', 'DATE_MODIFY',
-                    'UTM_SOURCE', 'UTM_MEDIUM', 'UTM_CAMPAIGN',
-                    'UTM_CONTENT', 'UTM_TERM', 'SOURCE_ID', 'SOURCE_DESCRIPTION'
-                ]
-            }
+            params = {}
             
             if SYNC_MODE == 'incremental':
                 cutoff_time = (datetime.utcnow() - timedelta(hours=HOURS_BACK)).isoformat()
@@ -364,17 +346,7 @@ class Bitrix24ETL:
         
         processed = 0
         try:
-            params = {
-                'select': [
-                    'ID', 'OWNER_ID', 'OWNER_TYPE_ID', 'TYPE_ID',
-                    'PROVIDER_ID', 'PROVIDER_TYPE_ID',
-                    'SUBJECT', 'DESCRIPTION', 'DESCRIPTION_TYPE',
-                    'DIRECTION', 'PRIORITY', 'STATUS', 'COMPLETED',
-                    'START_TIME', 'END_TIME', 'DEADLINE', 'CREATED', 'LAST_UPDATED',
-                    'RESPONSIBLE_ID', 'AUTHOR_ID',
-                    'COMMUNICATIONS'
-                ]
-            }
+            params = {}
             
             if SYNC_MODE == 'incremental':
                 cutoff_time = (datetime.utcnow() - timedelta(hours=HOURS_BACK)).isoformat()
@@ -385,7 +357,7 @@ class Bitrix24ETL:
             batch = []
             
             for activity in activities:
-                # Извлекаем длительность звонка если есть
+                # Длительность звонка
                 call_duration = None
                 if activity.get('PROVIDER_ID') == 'VOXIMPLANT':
                     call_duration = self.safe_int(activity.get('RESULT_VALUE'))
@@ -442,46 +414,57 @@ class Bitrix24ETL:
         logger.info("🔄 Calculating deal patterns...")
         
         try:
-            # SQL для расчёта паттернов
-            sql = """
-            INSERT INTO deal_patterns (
-                deal_id,
-                touches_count,
-                calls_count,
-                emails_count,
-                meetings_count,
-                avg_call_duration,
-                first_activity_date,
-                last_activity_date,
-                days_in_pipeline
-            )
-            SELECT 
-                d.id as deal_id,
-                COUNT(a.id) as touches_count,
-                COUNT(a.id) FILTER (WHERE a.type_id = 2) as calls_count,
-                COUNT(a.id) FILTER (WHERE a.type_id = 4) as emails_count,
-                COUNT(a.id) FILTER (WHERE a.type_id = 1) as meetings_count,
-                AVG(a.call_duration) FILTER (WHERE a.call_duration > 0) as avg_call_duration,
-                MIN(a.created) as first_activity_date,
-                MAX(a.created) as last_activity_date,
-                EXTRACT(DAY FROM (d.closedate - d.date_create)) as days_in_pipeline
-            FROM deals d
-            LEFT JOIN activities a ON a.owner_id = d.id AND a.owner_type_id = 2
-            GROUP BY d.id
-            ON CONFLICT (deal_id) 
-            DO UPDATE SET
-                touches_count = EXCLUDED.touches_count,
-                calls_count = EXCLUDED.calls_count,
-                emails_count = EXCLUDED.emails_count,
-                meetings_count = EXCLUDED.meetings_count,
-                avg_call_duration = EXCLUDED.avg_call_duration,
-                first_activity_date = EXCLUDED.first_activity_date,
-                last_activity_date = EXCLUDED.last_activity_date,
-                days_in_pipeline = EXCLUDED.days_in_pipeline;
-            """
+            # Прямой SQL через postgrest
+            # Вместо RPC используем прямые UPDATE/INSERT
             
-            self.supabase.rpc('exec_sql', {'sql': sql}).execute()
-            logger.info("  ✅ Patterns calculated")
+            # Получаем список всех сделок
+            deals_response = self.supabase.table('deals').select('id').execute()
+            deal_ids = [d['id'] for d in deals_response.data]
+            
+            if not deal_ids:
+                logger.info("  ℹ️ No deals to calculate patterns")
+                return
+            
+            # Для каждой сделки считаем паттерны
+            for deal_id in deal_ids:
+                # Получаем активности сделки
+                activities = self.supabase.table('activities')\
+                    .select('*')\
+                    .eq('owner_id', deal_id)\
+                    .eq('owner_type_id', 2)\
+                    .execute()
+                
+                if not activities.data:
+                    continue
+                
+                # Считаем метрики
+                touches_count = len(activities.data)
+                calls_count = len([a for a in activities.data if a.get('type_id') == 2])
+                emails_count = len([a for a in activities.data if a.get('type_id') == 4])
+                meetings_count = len([a for a in activities.data if a.get('type_id') == 1])
+                
+                call_durations = [a.get('call_duration') for a in activities.data if a.get('call_duration')]
+                avg_call_duration = sum(call_durations) / len(call_durations) if call_durations else None
+                
+                created_dates = [a.get('created') for a in activities.data if a.get('created')]
+                first_activity_date = min(created_dates) if created_dates else None
+                last_activity_date = max(created_dates) if created_dates else None
+                
+                # Сохраняем паттерн
+                pattern_data = {
+                    'deal_id': deal_id,
+                    'touches_count': touches_count,
+                    'calls_count': calls_count,
+                    'emails_count': emails_count,
+                    'meetings_count': meetings_count,
+                    'avg_call_duration': avg_call_duration,
+                    'first_activity_date': first_activity_date,
+                    'last_activity_date': last_activity_date
+                }
+                
+                self.supabase.table('deal_patterns').upsert(pattern_data).execute()
+            
+            logger.info(f"  ✅ Patterns calculated for {len(deal_ids)} deals")
             
         except Exception as e:
             logger.error(f"  ❌ Error calculating patterns: {e}")
@@ -496,13 +479,11 @@ class Bitrix24ETL:
         
         start_time = time.time()
         
-        # Порядок важен: сначала справочники, потом транзакции
         managers_count = self.extract_managers()
         contacts_count = self.extract_contacts()
         deals_count = self.extract_deals()
         activities_count = self.extract_activities()
         
-        # Расчёт паттернов
         self.calculate_patterns()
         
         duration = time.time() - start_time
@@ -517,7 +498,7 @@ class Bitrix24ETL:
         logger.info("=" * 80)
     
     def incremental_sync(self):
-        """Инкрементальная синхронизация (только изменения)"""
+        """Инкрементальная синхронизация"""
         logger.info("=" * 80)
         logger.info(f"🔄 INCREMENTAL SYNC STARTED (last {HOURS_BACK}h)")
         logger.info("=" * 80)
@@ -528,7 +509,6 @@ class Bitrix24ETL:
         deals_count = self.extract_deals()
         activities_count = self.extract_activities()
         
-        # Пересчёт паттернов для обновлённых сделок
         self.calculate_patterns()
         
         duration = time.time() - start_time
