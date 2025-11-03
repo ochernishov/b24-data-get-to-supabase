@@ -49,6 +49,8 @@ class Bitrix24ETL:
         self.rate_limit_delay = 0.5
         self.created_managers = set()  # Кэш уже созданных менеджеров
         self.pending_managers = []  # Батч для вставки менеджеров
+        self.created_companies = set()  # Кэш уже созданных компаний
+        self.pending_companies = []  # Батч для вставки компаний
         
     # ==================== УТИЛИТЫ ====================
 
@@ -85,6 +87,44 @@ class Bitrix24ETL:
         except Exception as e:
             logger.error(f"  ❌ Error flushing managers: {e}")
             self.pending_managers = []
+
+    def ensure_company_exists(self, company_id: int):
+        """Добавить компанию-заглушку в батч (для отсутствующих компаний)"""
+        if not company_id or company_id in self.created_companies:
+            return
+
+        company_data = {
+            'id': company_id,
+            'title': f'Company {company_id}',
+            'company_type': None,
+            'email': None,
+            'phone': None,
+            'web': None,
+            'address': None,
+            'date_create': None,
+            'date_modify': None,
+            'assigned_by_id': None,
+            'created_by_id': None,
+            'raw_data': {'ID': company_id, 'note': 'Auto-created stub for missing company'}
+        }
+        self.pending_companies.append(company_data)
+        self.created_companies.add(company_id)
+
+    def flush_companies(self):
+        """Вставить всех накопленных компаний-заглушек в базу"""
+        if not self.pending_companies:
+            return
+
+        try:
+            # Батчами по 50
+            for i in range(0, len(self.pending_companies), 50):
+                batch = self.pending_companies[i:i+50]
+                self.supabase.table('companies').upsert(batch).execute()
+            logger.info(f"  ✅ Flushed {len(self.pending_companies)} company stubs to DB")
+            self.pending_companies = []
+        except Exception as e:
+            logger.error(f"  ❌ Error flushing companies: {e}")
+            self.pending_companies = []
 
     @staticmethod
     def safe_int(value: Any, default: Optional[int] = None) -> Optional[int]:
@@ -218,6 +258,11 @@ class Bitrix24ETL:
             batch = []
 
             for company in companies:
+                company_id = self.safe_int(company['ID'])
+
+                # Отметить что эта компания уже загружена (реальная, не заглушка)
+                self.created_companies.add(company_id)
+
                 # Создать менеджеров если их нет в базе
                 self.ensure_manager_exists(self.safe_int(company.get('ASSIGNED_BY_ID')))
                 self.ensure_manager_exists(self.safe_int(company.get('CREATED_BY_ID')))
@@ -232,7 +277,7 @@ class Bitrix24ETL:
                     phone_value = company['PHONE'][0].get('VALUE')
 
                 company_data = {
-                    'id': self.safe_int(company['ID']),
+                    'id': company_id,
                     'title': company.get('TITLE') or None,
                     'company_type': company.get('COMPANY_TYPE') or None,
                     'email': email_value,
@@ -289,15 +334,24 @@ class Bitrix24ETL:
             batch = []
             
             for contact in contacts:
+                # Создать компанию-заглушку если её нет в базе
+                company_id = self.safe_int(contact.get('COMPANY_ID'))
+                if company_id:
+                    self.ensure_company_exists(company_id)
+
+                # Создать менеджеров если их нет
+                self.ensure_manager_exists(self.safe_int(contact.get('ASSIGNED_BY_ID')))
+                self.ensure_manager_exists(self.safe_int(contact.get('CREATED_BY_ID')))
+
                 # EMAIL и PHONE приходят как массивы
                 email_value = None
                 if contact.get('EMAIL') and isinstance(contact['EMAIL'], list) and len(contact['EMAIL']) > 0:
                     email_value = contact['EMAIL'][0].get('VALUE')
-                
+
                 phone_value = None
                 if contact.get('PHONE') and isinstance(contact['PHONE'], list) and len(contact['PHONE']) > 0:
                     phone_value = contact['PHONE'][0].get('VALUE')
-                
+
                 # Собираем полное имя
                 name_parts = [
                     contact.get('NAME'),
@@ -305,7 +359,7 @@ class Bitrix24ETL:
                     contact.get('LAST_NAME')
                 ]
                 full_name = ' '.join(filter(None, name_parts)) or None
-                
+
                 contact_data = {
                     'id': self.safe_int(contact['ID']),
                     'name': contact.get('NAME') or None,
@@ -318,7 +372,7 @@ class Bitrix24ETL:
                     'birthdate': self.safe_datetime(contact.get('BIRTHDATE')),
                     'date_create': self.safe_datetime(contact.get('DATE_CREATE')),
                     'date_modify': self.safe_datetime(contact.get('DATE_MODIFY')),
-                    'company_id': self.safe_int(contact.get('COMPANY_ID')),
+                    'company_id': company_id,
                     'assigned_by_id': self.safe_int(contact.get('ASSIGNED_BY_ID')),
                     'created_by_id': self.safe_int(contact.get('CREATED_BY_ID')),
                     'source_id': contact.get('SOURCE_ID') or None,
@@ -336,13 +390,19 @@ class Bitrix24ETL:
             
             if batch:
                 self.supabase.table('contacts').upsert(batch).execute()
-            
+
+            # Сохранить накопленные заглушки
+            self.flush_companies()
+            self.flush_managers()
+
             logger.info(f"  ✅ Contacts extracted: {processed}")
             self.log_sync_end(sync_id, 'completed', processed)
             return processed
-            
+
         except Exception as e:
             logger.error(f"  ❌ Error extracting contacts: {e}")
+            self.flush_companies()  # Сохранить заглушки даже при ошибке
+            self.flush_managers()
             self.log_sync_end(sync_id, 'failed', processed, str(e))
             return processed
     
