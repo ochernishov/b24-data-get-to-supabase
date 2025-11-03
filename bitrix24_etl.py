@@ -46,7 +46,7 @@ class Bitrix24ETL:
     def __init__(self):
         self.bitrix_url = BITRIX_WEBHOOK
         self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        self.rate_limit_delay = 0.5
+        self.rate_limit_delay = 0.3  # Уменьшил с 0.5 до 0.3 для ускорения
         self.created_managers = set()  # Кэш уже созданных менеджеров
         self.pending_managers = []  # Батч для вставки менеджеров
         self.created_companies = set()  # Кэш уже созданных компаний
@@ -175,39 +175,48 @@ class Bitrix24ETL:
         """Выполнить запрос к Bitrix24 API с пагинацией"""
         all_results = []
         start = 0
-        
+
         if params is None:
             params = {}
-        
+
+        # Логируем начало запроса
+        logger.info(f"  🔄 Starting Bitrix24 request: {method}")
+
         while True:
             request_params = {**params, 'start': start}
             url = f"{self.bitrix_url}{method}.json"
-            
+
             try:
                 time.sleep(self.rate_limit_delay)
                 response = requests.get(url, params=request_params, timeout=30)
                 response.raise_for_status()
                 data = response.json()
-                
+
                 if 'result' not in data:
                     break
-                
+
                 results = data['result']
                 if not results:
                     break
-                
+
                 all_results.extend(results)
-                
+
+                # Логируем прогресс каждые 500 записей
+                if len(all_results) % 500 == 0:
+                    total = data.get('total', 0)
+                    logger.info(f"  ⏳ {method}: loaded {len(all_results)}/{total} records...")
+
                 total = data.get('total', 0)
                 if len(all_results) >= total or len(results) < 50:
                     break
-                
+
                 start += 50
-                
+
             except Exception as e:
                 logger.error(f"❌ Error in Bitrix24 request {method}: {e}")
                 break
-        
+
+        logger.info(f"  ✅ {method}: completed, total {len(all_results)} records")
         return all_results
     
     def log_sync_start(self, entity_type: str) -> int:
@@ -382,13 +391,19 @@ class Bitrix24ETL:
                 
                 batch.append(contact_data)
                 processed += 1
-                
+
                 if len(batch) >= 50:
+                    # Флашим заглушки ПЕРЕД вставкой батча
+                    self.flush_companies()
+                    self.flush_managers()
                     self.supabase.table('contacts').upsert(batch).execute()
                     logger.info(f"  📊 Contacts extracted: {processed}")
                     batch = []
-            
+
             if batch:
+                # Флашим заглушки ПЕРЕД вставкой остатка
+                self.flush_companies()
+                self.flush_managers()
                 self.supabase.table('contacts').upsert(batch).execute()
 
             # Сохранить накопленные заглушки
