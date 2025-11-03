@@ -164,17 +164,42 @@ class Bitrix24ETL:
     # ==================== ИЗВЛЕЧЕНИЕ ДАННЫХ ====================
     
     def collect_user_ids_from_deals(self) -> set:
-        """Собрать все ID пользователей из сделок"""
+        """
+        Собрать ID пользователей из сделок (только первые 1000 для скорости)
+        1000 сделок достаточно чтобы найти всех активных менеджеров
+        """
         user_ids = set()
-        deals = self.bitrix_request('crm.deal.list')
 
-        for deal in deals:
-            if deal.get('ASSIGNED_BY_ID'):
-                user_ids.add(self.safe_int(deal['ASSIGNED_BY_ID']))
-            if deal.get('CREATED_BY_ID'):
-                user_ids.add(self.safe_int(deal['CREATED_BY_ID']))
-            if deal.get('MODIFY_BY_ID'):
-                user_ids.add(self.safe_int(deal['MODIFY_BY_ID']))
+        # Ограничиваем выборку для скорости (не грузим все сделки)
+        url = f"{self.bitrix_url}crm.deal.list.json"
+        params = {'start': 0, 'select': ['ASSIGNED_BY_ID', 'CREATED_BY_ID', 'MODIFY_BY_ID']}
+
+        for i in range(20):  # Максимум 20 * 50 = 1000 сделок
+            try:
+                time.sleep(self.rate_limit_delay)
+                response = requests.get(url, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                if 'result' not in data or not data['result']:
+                    break
+
+                for deal in data['result']:
+                    if deal.get('ASSIGNED_BY_ID'):
+                        user_ids.add(self.safe_int(deal['ASSIGNED_BY_ID']))
+                    if deal.get('CREATED_BY_ID'):
+                        user_ids.add(self.safe_int(deal['CREATED_BY_ID']))
+                    if deal.get('MODIFY_BY_ID'):
+                        user_ids.add(self.safe_int(deal['MODIFY_BY_ID']))
+
+                if len(data['result']) < 50:
+                    break
+
+                params['start'] += 50
+
+            except Exception as e:
+                logger.error(f"Error collecting user IDs: {e}")
+                break
 
         return user_ids
 
