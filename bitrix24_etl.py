@@ -46,7 +46,7 @@ class Bitrix24ETL:
     def __init__(self):
         self.bitrix_url = BITRIX_WEBHOOK
         self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        self.rate_limit_delay = 0.3  # Уменьшил с 0.5 до 0.3 для ускорения
+        self.rate_limit_delay = 0.6  # Увеличил до 0.6 после 429 ошибки (Too Many Requests)
         self.created_managers = set()  # Кэш уже созданных менеджеров
         self.pending_managers = []  # Батч для вставки менеджеров
         self.created_companies = set()  # Кэш уже созданных компаний
@@ -189,6 +189,14 @@ class Bitrix24ETL:
             try:
                 time.sleep(self.rate_limit_delay)
                 response = requests.get(url, params=request_params, timeout=30)
+
+                # Обработка 429 Too Many Requests
+                if response.status_code == 429:
+                    wait_time = 60  # Ждём 60 секунд
+                    logger.warning(f"⚠️  429 Too Many Requests! Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
+                    continue  # Повторяем тот же запрос
+
                 response.raise_for_status()
                 data = response.json()
 
@@ -212,6 +220,14 @@ class Bitrix24ETL:
 
                 start += 50
 
+            except requests.exceptions.HTTPError as e:
+                if '429' in str(e):
+                    # Дополнительная обработка 429 если не поймали выше
+                    logger.warning(f"⚠️  429 in exception! Waiting 60s...")
+                    time.sleep(60)
+                    continue
+                logger.error(f"❌ HTTP Error in Bitrix24 request {method}: {e}")
+                break
             except Exception as e:
                 logger.error(f"❌ Error in Bitrix24 request {method}: {e}")
                 break
