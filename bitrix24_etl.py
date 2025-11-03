@@ -48,30 +48,43 @@ class Bitrix24ETL:
         self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         self.rate_limit_delay = 0.5
         self.created_managers = set()  # Кэш уже созданных менеджеров
+        self.pending_managers = []  # Батч для вставки менеджеров
         
     # ==================== УТИЛИТЫ ====================
 
     def ensure_manager_exists(self, user_id: int):
-        """Создать менеджера если его нет в базе (on-the-fly)"""
+        """Добавить менеджера в батч (создание отложено до flush)"""
         if not user_id or user_id in self.created_managers:
             return
 
+        manager_data = {
+            'id': user_id,
+            'name': f'User {user_id}',
+            'last_name': None,
+            'email': None,
+            'work_position': None,
+            'personal_phone': None,
+            'personal_mobile': None,
+            'raw_data': {'ID': user_id, 'note': 'Auto-created on-the-fly'}
+        }
+        self.pending_managers.append(manager_data)
+        self.created_managers.add(user_id)
+
+    def flush_managers(self):
+        """Вставить всех накопленных менеджеров в базу"""
+        if not self.pending_managers:
+            return
+
         try:
-            manager_data = {
-                'id': user_id,
-                'name': f'User {user_id}',
-                'last_name': None,
-                'email': None,
-                'work_position': None,
-                'personal_phone': None,
-                'personal_mobile': None,
-                'raw_data': {'ID': user_id, 'note': 'Auto-created on-the-fly'}
-            }
-            self.supabase.table('managers').upsert(manager_data).execute()
-            self.created_managers.add(user_id)
+            # Батчами по 50
+            for i in range(0, len(self.pending_managers), 50):
+                batch = self.pending_managers[i:i+50]
+                self.supabase.table('managers').upsert(batch).execute()
+            logger.info(f"  ✅ Flushed {len(self.pending_managers)} managers to DB")
+            self.pending_managers = []
         except Exception as e:
-            # Игнорируем ошибки (возможно уже есть в базе)
-            pass
+            logger.error(f"  ❌ Error flushing managers: {e}")
+            self.pending_managers = []
 
     @staticmethod
     def safe_int(value: Any, default: Optional[int] = None) -> Optional[int]:
@@ -245,12 +258,16 @@ class Bitrix24ETL:
             if batch:
                 self.supabase.table('companies').upsert(batch).execute()
 
+            # Сохранить всех накопленных менеджеров
+            self.flush_managers()
+
             logger.info(f"  ✅ Companies extracted: {processed}")
             self.log_sync_end(sync_id, 'completed', processed)
             return processed
 
         except Exception as e:
             logger.error(f"  ❌ Error extracting companies: {e}")
+            self.flush_managers()  # Сохранить менеджеров даже при ошибке
             self.log_sync_end(sync_id, 'failed', processed)
             return processed
 
@@ -391,13 +408,17 @@ class Bitrix24ETL:
             
             if batch:
                 self.supabase.table('deals').upsert(batch).execute()
-            
+
+            # Сохранить всех накопленных менеджеров
+            self.flush_managers()
+
             logger.info(f"  ✅ Deals extracted: {processed}")
             self.log_sync_end(sync_id, 'completed', processed)
             return processed
-            
+
         except Exception as e:
             logger.error(f"  ❌ Error extracting deals: {e}")
+            self.flush_managers()  # Сохранить менеджеров даже при ошибке
             self.log_sync_end(sync_id, 'failed', processed, str(e))
             return processed
     
@@ -464,13 +485,17 @@ class Bitrix24ETL:
             
             if batch:
                 self.supabase.table('activities').upsert(batch).execute()
-            
+
+            # Сохранить всех накопленных менеджеров
+            self.flush_managers()
+
             logger.info(f"  ✅ Activities extracted: {processed}")
             self.log_sync_end(sync_id, 'completed', processed)
             return processed
-            
+
         except Exception as e:
             logger.error(f"  ❌ Error extracting activities: {e}")
+            self.flush_managers()  # Сохранить менеджеров даже при ошибке
             self.log_sync_end(sync_id, 'failed', processed, str(e))
             return processed
     
