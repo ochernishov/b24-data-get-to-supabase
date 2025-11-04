@@ -397,6 +397,86 @@ class Bitrix24ETL:
     # ==================== ИЗВЛЕЧЕНИЕ ДАННЫХ ====================
     
     
+    # ==================== СПРАВОЧНИКИ ====================
+
+    def extract_dictionaries(self):
+        """Загрузить все справочники: воронки, стадии, статусы"""
+        logger.info("📚 Extracting dictionaries...")
+
+        try:
+            # 1. Воронки сделок (categories)
+            logger.info("  📋 Loading deal categories...")
+            categories = self.bitrix_request('crm.category.list', {'entityTypeId': 2})  # 2 = DEAL
+            if categories:
+                for cat in categories:
+                    cat_data = {
+                        'id': self.safe_int(cat['id']),
+                        'name': cat.get('name') or f"Category {cat['id']}",
+                        'sort': self.safe_int(cat.get('sort')) or 500,
+                        'is_default': cat.get('isDefault') == 'Y'
+                    }
+                    self.supabase.table('deal_categories').upsert(cat_data).execute()
+                logger.info(f"  ✅ Loaded {len(categories)} deal categories")
+
+            # 2. Стадии сделок (stages)
+            logger.info("  📋 Loading deal stages...")
+            all_stages = []
+            # Получаем стадии для каждой воронки
+            if categories:
+                for cat in categories:
+                    cat_id = self.safe_int(cat['id'])
+                    stages = self.bitrix_request('crm.status.list', {
+                        'filter': {'ENTITY_ID': f'DEAL_STAGE_{cat_id}'}
+                    })
+                    for stage in stages:
+                        stage_data = {
+                            'id': stage['STATUS_ID'],
+                            'name': stage.get('NAME') or stage['STATUS_ID'],
+                            'category_id': cat_id,
+                            'status_id': stage['STATUS_ID'],
+                            'sort': self.safe_int(stage.get('SORT')) or 500,
+                            'color': stage.get('COLOR'),
+                            'semantics': stage.get('SEMANTICS')
+                        }
+                        all_stages.append(stage_data)
+
+            if all_stages:
+                # Вставляем батчами
+                for i in range(0, len(all_stages), 50):
+                    batch = all_stages[i:i+50]
+                    self.supabase.table('deal_stages').upsert(batch).execute()
+                logger.info(f"  ✅ Loaded {len(all_stages)} deal stages")
+
+            # 3. Статусы лидов
+            logger.info("  📋 Loading lead statuses...")
+            lead_statuses = self.bitrix_request('crm.status.list', {
+                'filter': {'ENTITY_ID': 'STATUS'}
+            })
+            if lead_statuses:
+                status_batch = []
+                for status in lead_statuses:
+                    status_data = {
+                        'id': status['STATUS_ID'],
+                        'name': status.get('NAME') or status['STATUS_ID'],
+                        'sort': self.safe_int(status.get('SORT')) or 500,
+                        'color': status.get('COLOR'),
+                        'semantics': status.get('SEMANTICS')
+                    }
+                    status_batch.append(status_data)
+
+                for i in range(0, len(status_batch), 50):
+                    batch = status_batch[i:i+50]
+                    self.supabase.table('lead_statuses').upsert(batch).execute()
+                logger.info(f"  ✅ Loaded {len(status_batch)} lead statuses")
+
+            logger.info("  ✅ Dictionaries loaded successfully")
+
+        except Exception as e:
+            logger.error(f"  ❌ Error loading dictionaries: {e}")
+            # Продолжаем работу даже если справочники не загрузились
+
+    # ==================== ОСНОВНЫЕ СУЩНОСТИ ====================
+
     def extract_companies(self) -> int:
         """Извлечь компании"""
         logger.info("📥 Extracting companies...")
@@ -870,6 +950,9 @@ class Bitrix24ETL:
         logger.info("=" * 80)
 
         start_time = time.time()
+
+        # Загрузить справочники (воронки, стадии, статусы)
+        self.extract_dictionaries()
 
         # Managers создаются автоматически в процессе загрузки
         companies_count = 0

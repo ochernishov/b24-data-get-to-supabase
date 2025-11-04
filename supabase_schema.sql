@@ -15,6 +15,9 @@ DROP TABLE IF EXISTS companies CASCADE;
 DROP TABLE IF EXISTS leads CASCADE;
 DROP TABLE IF EXISTS managers CASCADE;
 DROP TABLE IF EXISTS sync_log CASCADE;
+DROP TABLE IF EXISTS deal_categories CASCADE;
+DROP TABLE IF EXISTS deal_stages CASCADE;
+DROP TABLE IF EXISTS lead_statuses CASCADE;
 
 -- ============================================================================
 -- 1. СПРАВОЧНИК МЕНЕДЖЕРОВ
@@ -41,6 +44,57 @@ CREATE INDEX idx_managers_active ON managers(active);
 CREATE INDEX idx_managers_email ON managers(email);
 
 COMMENT ON TABLE managers IS 'Справочник менеджеров (пользователей) из Битрикс24';
+
+-- ============================================================================
+-- 1.1 СПРАВОЧНИК ВОРОНОК СДЕЛОК
+-- ============================================================================
+CREATE TABLE deal_categories (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    sort INTEGER DEFAULT 500,
+    is_default BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+COMMENT ON TABLE deal_categories IS 'Воронки продаж (направления) для сделок';
+
+-- ============================================================================
+-- 1.2 СПРАВОЧНИК СТАДИЙ СДЕЛОК
+-- ============================================================================
+CREATE TABLE deal_stages (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    category_id INTEGER REFERENCES deal_categories(id),
+    status_id TEXT NOT NULL,
+    sort INTEGER DEFAULT 500,
+    color TEXT,
+    semantics TEXT, -- P (процесс), S (успех), F (провал)
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_deal_stages_category ON deal_stages(category_id);
+CREATE INDEX idx_deal_stages_semantics ON deal_stages(semantics);
+
+COMMENT ON TABLE deal_stages IS 'Стадии сделок с названиями';
+
+-- ============================================================================
+-- 1.3 СПРАВОЧНИК СТАТУСОВ ЛИДОВ
+-- ============================================================================
+CREATE TABLE lead_statuses (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    sort INTEGER DEFAULT 500,
+    color TEXT,
+    semantics TEXT, -- P (процесс), S (успех), F (провал)
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_lead_statuses_semantics ON lead_statuses(semantics);
+
+COMMENT ON TABLE lead_statuses IS 'Статусы лидов';
 
 -- ============================================================================
 -- 2. КОМПАНИИ
