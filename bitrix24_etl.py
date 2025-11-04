@@ -494,11 +494,13 @@ class Bitrix24ETL:
             if SYNC_MODE == 'incremental':
                 cutoff_time = (datetime.utcnow() - timedelta(hours=HOURS_BACK)).isoformat()
                 params['filter'] = {'>DATE_MODIFY': cutoff_time}
-            
+
+            logger.info("  🔄 Calling bitrix_request for deals...")
             deals = self.bitrix_request('crm.deal.list', params)
-            
+            logger.info(f"  ✅ Got {len(deals)} deals from Bitrix24, starting processing...")
+
             batch = []
-            
+
             for deal in deals:
                 # Создать менеджеров если их нет в базе
                 self.ensure_manager_exists(self.safe_int(deal.get('ASSIGNED_BY_ID')))
