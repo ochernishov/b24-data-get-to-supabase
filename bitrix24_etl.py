@@ -28,10 +28,8 @@ logger = logging.getLogger(__name__)
 BITRIX_WEBHOOK = os.getenv('BITRIX_WEBHOOK', '').rstrip('/') + '/'  # Гарантируем слеш в конце
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-SYNC_MODE = os.getenv('SYNC_MODE', 'full')
+SYNC_MODE = os.getenv('SYNC_MODE', 'incremental')  # По умолчанию incremental
 HOURS_BACK = int(os.getenv('HOURS_BACK', '24'))
-SKIP_COMPANIES = os.getenv('SKIP_COMPANIES', 'false').lower() == 'true'
-SKIP_CONTACTS = os.getenv('SKIP_CONTACTS', 'false').lower() == 'true'
 
 # Проверка обязательных переменных
 if not all([BITRIX_WEBHOOK, SUPABASE_URL, SUPABASE_KEY]):
@@ -955,18 +953,8 @@ class Bitrix24ETL:
         self.extract_dictionaries()
 
         # Managers создаются автоматически в процессе загрузки
-        companies_count = 0
-        if not SKIP_COMPANIES:
-            companies_count = self.extract_companies()
-        else:
-            logger.info("⏭️  Skipping companies extraction (SKIP_COMPANIES=true)")
-
-        contacts_count = 0
-        if not SKIP_CONTACTS:
-            contacts_count = self.extract_contacts()
-        else:
-            logger.info("⏭️  Skipping contacts extraction (SKIP_CONTACTS=true)")
-
+        companies_count = self.extract_companies()
+        contacts_count = self.extract_contacts()
         deals_count = self.extract_deals()
         activities_count = self.extract_activities()
         managers_count = len(self.created_managers)
