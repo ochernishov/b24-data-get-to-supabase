@@ -408,8 +408,8 @@ class Bitrix24ETL:
             if categories:
                 for cat in categories:
                     cat_data = {
-                        'id': self.safe_int(cat['id']),
-                        'name': cat.get('name') or f"Category {cat['id']}",
+                        'id': self.safe_int(cat.get('id')),
+                        'name': cat.get('name') or f"Category {cat.get('id')}",
                         'sort': self.safe_int(cat.get('sort')) or 500,
                         'is_default': cat.get('isDefault') == 'Y'
                     }
@@ -422,7 +422,7 @@ class Bitrix24ETL:
             # Получаем стадии для каждой воронки
             if categories:
                 for cat in categories:
-                    cat_id = self.safe_int(cat['id'])
+                    cat_id = self.safe_int(cat.get('id'))
                     stages = self.bitrix_request('crm.status.list', {
                         'filter': {'ENTITY_ID': f'DEAL_STAGE_{cat_id}'}
                     })
@@ -1029,25 +1029,42 @@ class Bitrix24ETL:
                 deal_ids = [d['id'] for d in deals_to_enrich.data]
                 logger.info(f"  Found {len(deal_ids)} deals to enrich")
 
-                # Загрузить эти сделки из Битрикса
-                for i in range(0, len(deal_ids), 50):
-                    batch_ids = deal_ids[i:i+50]
-                    params = {'filter': {'ID': batch_ids}}
-                    deals = self.bitrix_request('crm.deal.list', params)
+                # Загрузить эти сделки из Битрикса (по одной, т.к. batch filter не работает)
+                enriched_count = 0
+                updates = []
 
-                    if deals:
-                        updates = []
-                        for deal in deals:
+                for deal_id in deal_ids:
+                    try:
+                        time.sleep(self.rate_limit_delay)
+                        url = f"{self.bitrix_url}crm.deal.get.json"
+                        response = requests.get(url, params={'id': deal_id}, timeout=30)
+                        response.raise_for_status()
+                        data = response.json()
+
+                        if 'result' in data and data['result']:
+                            deal = data['result']
                             deal_update = {
                                 'id': self.safe_int(deal['ID']),
                                 'type_id': deal.get('TYPE_ID') or None,
                                 'category_id': self.safe_int(deal.get('CATEGORY_ID'))
                             }
                             updates.append(deal_update)
+                            enriched_count += 1
 
-                        if updates:
-                            self.supabase.table('deals').upsert(updates).execute()
-                            logger.info(f"  ✅ Enriched {len(updates)} deals")
+                            # Вставляем батчами по 50
+                            if len(updates) >= 50:
+                                self.supabase.table('deals').upsert(updates).execute()
+                                logger.info(f"  ✅ Enriched {enriched_count}/{len(deal_ids)} deals")
+                                updates = []
+
+                    except Exception as e:
+                        logger.warning(f"  ⚠️  Failed to enrich deal {deal_id}: {e}")
+                        continue
+
+                # Вставить остаток
+                if updates:
+                    self.supabase.table('deals').upsert(updates).execute()
+                    logger.info(f"  ✅ Enriched {enriched_count}/{len(deal_ids)} deals (final batch)")
             else:
                 logger.info("  ✅ All deals already enriched")
 
