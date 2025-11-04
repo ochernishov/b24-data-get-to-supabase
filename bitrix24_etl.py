@@ -693,64 +693,65 @@ class Bitrix24ETL:
                 logger.info(f"  📄 Page {page}: processing {len(deals_page)} deals...")
 
                 for deal in deals_page:
-                # Создать менеджеров если их нет в базе
-                self.ensure_manager_exists(self.safe_int(deal.get('ASSIGNED_BY_ID')))
-                self.ensure_manager_exists(self.safe_int(deal.get('CREATED_BY_ID')))
-                self.ensure_manager_exists(self.safe_int(deal.get('MODIFY_BY_ID')))
+                    # Создать менеджеров если их нет в базе
+                    self.ensure_manager_exists(self.safe_int(deal.get('ASSIGNED_BY_ID')))
+                    self.ensure_manager_exists(self.safe_int(deal.get('CREATED_BY_ID')))
+                    self.ensure_manager_exists(self.safe_int(deal.get('MODIFY_BY_ID')))
 
-                # Создать компании/контакты если их нет в базе
-                company_id = self.safe_int(deal.get('COMPANY_ID'))
-                contact_id = self.safe_int(deal.get('CONTACT_ID'))
-                if company_id:
-                    self.ensure_company_exists(company_id)
-                if contact_id:
-                    self.ensure_contact_exists(contact_id)
+                    # Создать компании/контакты если их нет в базе
+                    company_id = self.safe_int(deal.get('COMPANY_ID'))
+                    contact_id = self.safe_int(deal.get('CONTACT_ID'))
+                    if company_id:
+                        self.ensure_company_exists(company_id)
+                    if contact_id:
+                        self.ensure_contact_exists(contact_id)
 
-                deal_data = {
-                    'id': self.safe_int(deal['ID']),
-                    'title': deal.get('TITLE') or None,
-                    'type_id': deal.get('TYPE_ID') or None,
-                    'category_id': self.safe_int(deal.get('CATEGORY_ID')),
-                    'stage_id': deal.get('STAGE_ID') or None,
-                    'stage_semantic_id': deal.get('STAGE_SEMANTIC_ID') or None,
-                    'opportunity': self.safe_float(deal.get('OPPORTUNITY')),
-                    'currency_id': deal.get('CURRENCY_ID') or 'RUB',
-                    'tax_value': self.safe_float(deal.get('TAX_VALUE')),
-                    'company_id': company_id if company_id else None,
-                    'contact_id': contact_id if contact_id else None,
-                    'assigned_by_id': self.safe_int(deal.get('ASSIGNED_BY_ID')) or None,
-                    'created_by_id': self.safe_int(deal.get('CREATED_BY_ID')) or None,
-                    'closed': self.safe_bool(deal.get('CLOSED')),
-                    'begindate': self.safe_datetime(deal.get('BEGINDATE')),
-                    'closedate': self.safe_datetime(deal.get('CLOSEDATE')),
-                    'date_create': self.safe_datetime(deal.get('DATE_CREATE')),
-                    'date_modify': self.safe_datetime(deal.get('DATE_MODIFY')),
-                    'utm_source': deal.get('UTM_SOURCE') or None,
-                    'utm_medium': deal.get('UTM_MEDIUM') or None,
-                    'utm_campaign': deal.get('UTM_CAMPAIGN') or None,
-                    'utm_content': deal.get('UTM_CONTENT') or None,
-                    'utm_term': deal.get('UTM_TERM') or None,
-                    'source_id': deal.get('SOURCE_ID') or None,
-                    'source_description': deal.get('SOURCE_DESCRIPTION') or None,
-                    'raw_data': deal
-                }
-                
-                batch.append(deal_data)
-                processed += 1
+                    deal_data = {
+                        'id': self.safe_int(deal['ID']),
+                        'title': deal.get('TITLE') or None,
+                        'type_id': deal.get('TYPE_ID') or None,
+                        'category_id': self.safe_int(deal.get('CATEGORY_ID')),
+                        'stage_id': deal.get('STAGE_ID') or None,
+                        'stage_semantic_id': deal.get('STAGE_SEMANTIC_ID') or None,
+                        'opportunity': self.safe_float(deal.get('OPPORTUNITY')),
+                        'currency_id': deal.get('CURRENCY_ID') or 'RUB',
+                        'tax_value': self.safe_float(deal.get('TAX_VALUE')),
+                        'company_id': company_id if company_id else None,
+                        'contact_id': contact_id if contact_id else None,
+                        'assigned_by_id': self.safe_int(deal.get('ASSIGNED_BY_ID')) or None,
+                        'created_by_id': self.safe_int(deal.get('CREATED_BY_ID')) or None,
+                        'closed': self.safe_bool(deal.get('CLOSED')),
+                        'begindate': self.safe_datetime(deal.get('BEGINDATE')),
+                        'closedate': self.safe_datetime(deal.get('CLOSEDATE')),
+                        'date_create': self.safe_datetime(deal.get('DATE_CREATE')),
+                        'date_modify': self.safe_datetime(deal.get('DATE_MODIFY')),
+                        'utm_source': deal.get('UTM_SOURCE') or None,
+                        'utm_medium': deal.get('UTM_MEDIUM') or None,
+                        'utm_campaign': deal.get('UTM_CAMPAIGN') or None,
+                        'utm_content': deal.get('UTM_CONTENT') or None,
+                        'utm_term': deal.get('UTM_TERM') or None,
+                        'source_id': deal.get('SOURCE_ID') or None,
+                        'source_description': deal.get('SOURCE_DESCRIPTION') or None,
+                        'raw_data': deal
+                    }
 
-                    if len(batch) >= 50:
-                        # Флашим заглушки ПЕРЕД вставкой батча
-                        self.flush_companies()
-                        self.flush_contacts()
-                        self.flush_managers()
-                        try:
-                            response = self.supabase.table('deals').upsert(batch).execute()
-                            logger.info(f"  📊 Deals extracted: {processed}, inserted: {len(response.data) if response.data else 0}")
-                        except Exception as e:
-                            logger.error(f"  ❌ Error upserting deals batch: {e}")
-                            logger.error(f"  Sample deal data: {batch[0] if batch else 'empty'}")
-                            raise
-                        batch = []
+                    batch.append(deal_data)
+                    processed += 1
+
+                # После обработки всех deals на странице - проверяем батч
+                if len(batch) >= 50:
+                    # Флашим заглушки ПЕРЕД вставкой батча
+                    self.flush_companies()
+                    self.flush_contacts()
+                    self.flush_managers()
+                    try:
+                        response = self.supabase.table('deals').upsert(batch).execute()
+                        logger.info(f"  📊 Deals extracted: {processed}, inserted: {len(response.data) if response.data else 0}")
+                    except Exception as e:
+                        logger.error(f"  ❌ Error upserting deals batch: {e}")
+                        logger.error(f"  Sample deal data: {batch[0] if batch else 'empty'}")
+                        raise
+                    batch = []
 
                 # Проверка условий выхода
                 if len(deals_page) < 50:
