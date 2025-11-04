@@ -405,8 +405,17 @@ class Bitrix24ETL:
             # 1. Воронки сделок (categories)
             logger.info("  📋 Loading deal categories...")
             categories = self.bitrix_request('crm.category.list', {'entityTypeId': 2})  # 2 = DEAL
+
             if categories:
+                logger.info(f"  🔍 DEBUG: Got {len(categories)} categories, first item type: {type(categories[0])}")
+                logger.info(f"  🔍 DEBUG: First category: {categories[0] if len(categories) > 0 else 'empty'}")
+
                 for cat in categories:
+                    # Если cat - это строка или не dict, пропускаем
+                    if not isinstance(cat, dict):
+                        logger.warning(f"  ⚠️  Skipping non-dict category: {cat}")
+                        continue
+
                     cat_data = {
                         'id': self.safe_int(cat.get('id')),
                         'name': cat.get('name') or f"Category {cat.get('id')}",
