@@ -293,8 +293,8 @@ class Bitrix24ETL:
                     logger.error(f"  ❌ Loaded {len(all_results)} but total={total} (invalid)! Breaking to prevent infinite loop.")
                     break
 
-                # EMERGENCY: Если загрузили > 2500 ЛЮБЫХ записей → FORCE BREAK!
-                if len(all_results) > 2500:
+                # EMERGENCY: Если загрузили >= 2500 ЛЮБЫХ записей → FORCE BREAK!
+                if len(all_results) >= 2500:
                     logger.warning(f"  ⚠️  EMERGENCY BREAK at {len(all_results)} records! Returning what we have to avoid infinite loop.")
                     break
 
