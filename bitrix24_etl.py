@@ -324,8 +324,8 @@ class Bitrix24ETL:
                     logger.error(f"  ❌ Loaded {len(all_results)} but total={total} (invalid)! Breaking to prevent infinite loop.")
                     break
 
-                # EMERGENCY: Если загрузили >= 2500 ЛЮБЫХ записей → FORCE BREAK!
-                if len(all_results) >= 2500:
+                # EMERGENCY: Если загрузили >= 50000 ЛЮБЫХ записей → FORCE BREAK!
+                if len(all_results) >= 50000:
                     logger.warning(f"  ⚠️  EMERGENCY BREAK at {len(all_results)} records! Returning what we have to avoid infinite loop.")
                     break
 
@@ -829,8 +829,9 @@ class Bitrix24ETL:
         deals_count = self.extract_deals()
         activities_count = self.extract_activities()
         managers_count = len(self.created_managers)
-        
-        self.calculate_patterns()
+
+        # ОТКЛЮЧЕНО: calculate_patterns() тормозит при большом количестве сделок
+        # self.calculate_patterns()
         
         duration = time.time() - start_time
         
@@ -855,8 +856,9 @@ class Bitrix24ETL:
         contacts_count = self.extract_contacts()
         deals_count = self.extract_deals()
         activities_count = self.extract_activities()
-        
-        self.calculate_patterns()
+
+        # ОТКЛЮЧЕНО: calculate_patterns() тормозит при большом количестве сделок
+        # self.calculate_patterns()
         
         duration = time.time() - start_time
         
