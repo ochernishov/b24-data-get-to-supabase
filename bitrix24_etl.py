@@ -445,7 +445,7 @@ class Bitrix24ETL:
                 for cat in categories:
                     cat_id = self.safe_int(cat.get('id'))
                     stages = self.bitrix_request('crm.status.list', {
-                        'filter': {'ENTITY_ID': f'DEAL_STAGE_{cat_id}'}
+                        'filter[ENTITY_ID]': f'DEAL_STAGE_{cat_id}'
                     })
                     for stage in stages:
                         stage_data = {
@@ -469,7 +469,7 @@ class Bitrix24ETL:
             # 3. Статусы лидов
             logger.info("  📋 Loading lead statuses...")
             lead_statuses = self.bitrix_request('crm.status.list', {
-                'filter': {'ENTITY_ID': 'STATUS'}
+                'filter[ENTITY_ID]': 'STATUS'
             })
             if lead_statuses:
                 status_batch = []
