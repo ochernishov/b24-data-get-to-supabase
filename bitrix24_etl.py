@@ -222,6 +222,8 @@ class Bitrix24ETL:
         start = 0
         iterations = 0
         max_iterations = 1000  # Защита от бесконечного цикла
+        last_count = 0
+        stuck_counter = 0  # Счётчик "застреваний" на одном месте
 
         if params is None:
             params = {}
@@ -234,6 +236,16 @@ class Bitrix24ETL:
             if iterations > max_iterations:
                 logger.error(f"  ❌ Max iterations ({max_iterations}) reached! Breaking loop.")
                 break
+
+            # Проверка на зависание (если количество не растёт)
+            if len(all_results) == last_count:
+                stuck_counter += 1
+                if stuck_counter > 3:
+                    logger.error(f"  ❌ Stuck at {len(all_results)} records for 3 iterations! Breaking.")
+                    break
+            else:
+                stuck_counter = 0
+                last_count = len(all_results)
             request_params = {**params, 'start': start}
             url = f"{self.bitrix_url}{method}.json"
 
