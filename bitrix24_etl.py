@@ -320,6 +320,21 @@ class Bitrix24ETL:
                 if not results:
                     break
 
+                # Если result - это dict (для некоторых методов типа crm.category.list),
+                # извлекаем массив из вложенного ключа или оборачиваем в массив
+                if isinstance(results, dict):
+                    # Для crm.category.list результат может быть {'categories': [...]}
+                    # или {'0': {...}, '1': {...}} - в этом случае берем values
+                    if 'categories' in results:
+                        results = results['categories']
+                    else:
+                        # Если dict с числовыми ключами, берем values
+                        results = list(results.values())
+
+                # Если результат всё ещё dict после обработки, оборачиваем в список
+                if isinstance(results, dict):
+                    results = [results]
+
                 all_results.extend(results)
 
                 # Логируем прогресс каждые 500 записей
@@ -407,13 +422,10 @@ class Bitrix24ETL:
             categories = self.bitrix_request('crm.category.list', {'entityTypeId': 2})  # 2 = DEAL
 
             if categories:
-                logger.info(f"  🔍 DEBUG: Got {len(categories)} categories, first item type: {type(categories[0])}")
-                logger.info(f"  🔍 DEBUG: First category: {categories[0] if len(categories) > 0 else 'empty'}")
-
                 for cat in categories:
                     # Если cat - это строка или не dict, пропускаем
                     if not isinstance(cat, dict):
-                        logger.warning(f"  ⚠️  Skipping non-dict category: {cat}")
+                        logger.warning(f"  ⚠️  Skipping non-dict category: {type(cat)} = {cat}")
                         continue
 
                     cat_data = {
