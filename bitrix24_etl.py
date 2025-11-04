@@ -641,7 +641,7 @@ class Bitrix24ETL:
                     'direction': self.safe_int(activity.get('DIRECTION')),
                     'priority': self.safe_int(activity.get('PRIORITY')),
                     'status': self.safe_int(activity.get('STATUS')),
-                    'completed': self.safe_bool(activity.get('COMPLETED')),
+                    'completed': self.safe_datetime(activity.get('COMPLETED')),
                     'start_time': self.safe_datetime(activity.get('START_TIME')),
                     'end_time': self.safe_datetime(activity.get('END_TIME')),
                     'deadline': self.safe_datetime(activity.get('DEADLINE')),
