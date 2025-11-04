@@ -64,21 +64,42 @@ class Bitrix24ETL:
     def load_existing_ids(self):
         """Загрузить все существующие ID из Supabase чтобы не создавать дубликаты"""
         try:
-            # Загрузить ID компаний
+            # Загрузить ID компаний (постранично, чтобы получить ВСЕ)
             logger.info("📋 Loading existing company IDs from Supabase...")
-            response = self.supabase.table('companies').select('id').execute()
-            if response.data:
-                self.created_companies = {row['id'] for row in response.data}
+            all_companies = []
+            range_start = 0
+            range_size = 1000
+            while True:
+                response = self.supabase.table('companies').select('id').range(range_start, range_start + range_size - 1).execute()
+                if not response.data:
+                    break
+                all_companies.extend(response.data)
+                if len(response.data) < range_size:
+                    break
+                range_start += range_size
+
+            if all_companies:
+                self.created_companies = {row['id'] for row in all_companies}
                 logger.info(f"  ✅ Loaded {len(self.created_companies)} existing company IDs")
 
-            # Загрузить ID контактов
+            # Загрузить ID контактов (постранично)
             logger.info("📋 Loading existing contact IDs from Supabase...")
-            response = self.supabase.table('contacts').select('id').execute()
-            if response.data:
-                self.created_contacts = {row['id'] for row in response.data}
+            all_contacts = []
+            range_start = 0
+            while True:
+                response = self.supabase.table('contacts').select('id').range(range_start, range_start + range_size - 1).execute()
+                if not response.data:
+                    break
+                all_contacts.extend(response.data)
+                if len(response.data) < range_size:
+                    break
+                range_start += range_size
+
+            if all_contacts:
+                self.created_contacts = {row['id'] for row in all_contacts}
                 logger.info(f"  ✅ Loaded {len(self.created_contacts)} existing contact IDs")
 
-            # Загрузить ID менеджеров
+            # Загрузить ID менеджеров (обычно их мало, хватит одного запроса)
             logger.info("📋 Loading existing manager IDs from Supabase...")
             response = self.supabase.table('managers').select('id').execute()
             if response.data:
