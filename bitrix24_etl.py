@@ -220,6 +220,8 @@ class Bitrix24ETL:
         """Выполнить запрос к Bitrix24 API с пагинацией"""
         all_results = []
         start = 0
+        iterations = 0
+        max_iterations = 1000  # Защита от бесконечного цикла
 
         if params is None:
             params = {}
@@ -228,6 +230,10 @@ class Bitrix24ETL:
         logger.info(f"  🔄 Starting Bitrix24 request: {method}")
 
         while True:
+            iterations += 1
+            if iterations > max_iterations:
+                logger.error(f"  ❌ Max iterations ({max_iterations}) reached! Breaking loop.")
+                break
             request_params = {**params, 'start': start}
             url = f"{self.bitrix_url}{method}.json"
 
@@ -260,7 +266,14 @@ class Bitrix24ETL:
                     logger.info(f"  ⏳ {method}: loaded {len(all_results)}/{total} records...")
 
                 total = data.get('total', 0)
-                if len(all_results) >= total or len(results) < 50:
+
+                # Проверка условий выхода из цикла
+                if len(results) < 50:
+                    logger.info(f"  🛑 Got less than 50 results ({len(results)}), stopping pagination")
+                    break
+
+                if total > 0 and len(all_results) >= total:
+                    logger.info(f"  🛑 Loaded all {total} records, stopping pagination")
                     break
 
                 start += 50
