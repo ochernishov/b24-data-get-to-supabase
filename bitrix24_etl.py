@@ -288,6 +288,11 @@ class Bitrix24ETL:
                     logger.info(f"  🛑 Loaded all {total} records, stopping pagination")
                     break
 
+                # КРИТИЧЕСКАЯ проверка: если загрузили уже много но total=0 или некорректен → BREAK
+                if len(all_results) >= 2000 and (total == 0 or total < len(all_results)):
+                    logger.error(f"  ❌ Loaded {len(all_results)} but total={total} (invalid)! Breaking to prevent infinite loop.")
+                    break
+
                 start += 50
 
             except requests.exceptions.HTTPError as e:
