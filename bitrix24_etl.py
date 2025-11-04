@@ -987,29 +987,84 @@ class Bitrix24ETL:
         logger.info("=" * 80)
     
     def incremental_sync(self):
-        """Инкрементальная синхронизация"""
+        """
+        УМНАЯ инкрементальная синхронизация:
+        1. Обновляет справочники
+        2. Обогащает существующие записи недостающими полями
+        3. Загружает только измененные записи за последние HOURS_BACK часов
+        """
         logger.info("=" * 80)
-        logger.info(f"🔄 INCREMENTAL SYNC STARTED (last {HOURS_BACK}h)")
+        logger.info(f"🔄 SMART INCREMENTAL SYNC STARTED (last {HOURS_BACK}h)")
         logger.info("=" * 80)
-        
+
         start_time = time.time()
-        
+
+        # 1. Обновить справочники (воронки, стадии могут меняться)
+        logger.info("📚 Updating dictionaries...")
+        self.extract_dictionaries()
+
+        # 2. Обогатить существующие записи недостающими полями
+        logger.info("🔧 Enriching existing records with missing fields...")
+        self.enrich_existing_records()
+
+        # 3. Загрузить изменения за последние HOURS_BACK часов
+        logger.info(f"📥 Loading changes from last {HOURS_BACK} hours...")
         contacts_count = self.extract_contacts()
         deals_count = self.extract_deals()
         activities_count = self.extract_activities()
 
-        # ОТКЛЮЧЕНО: calculate_patterns() тормозит при большом количестве сделок
-        # self.calculate_patterns()
-        
         duration = time.time() - start_time
-        
+
         logger.info("=" * 80)
-        logger.info("✅ INCREMENTAL SYNC COMPLETED")
+        logger.info("✅ SMART INCREMENTAL SYNC COMPLETED")
         logger.info(f"   Duration: {duration:.2f}s")
-        logger.info(f"   Contacts: {contacts_count}")
-        logger.info(f"   Deals: {deals_count}")
-        logger.info(f"   Activities: {activities_count}")
+        logger.info(f"   Contacts updated: {contacts_count}")
+        logger.info(f"   Deals updated: {deals_count}")
+        logger.info(f"   Activities updated: {activities_count}")
         logger.info("=" * 80)
+
+    def enrich_existing_records(self):
+        """Обогатить существующие записи недостающими полями"""
+        try:
+            # Обогатить сделки: добавить type_id и category_id где NULL
+            logger.info("  🔧 Enriching deals with missing type_id and category_id...")
+
+            # Получить ID сделок где type_id или category_id = NULL
+            deals_to_enrich = self.supabase.table('deals')\
+                .select('id')\
+                .or_('type_id.is.null,category_id.is.null')\
+                .limit(1000)\
+                .execute()
+
+            if deals_to_enrich.data and len(deals_to_enrich.data) > 0:
+                deal_ids = [d['id'] for d in deals_to_enrich.data]
+                logger.info(f"  Found {len(deal_ids)} deals to enrich")
+
+                # Загрузить эти сделки из Битрикса
+                for i in range(0, len(deal_ids), 50):
+                    batch_ids = deal_ids[i:i+50]
+                    params = {'filter': {'ID': batch_ids}}
+                    deals = self.bitrix_request('crm.deal.list', params)
+
+                    if deals:
+                        updates = []
+                        for deal in deals:
+                            deal_update = {
+                                'id': self.safe_int(deal['ID']),
+                                'type_id': deal.get('TYPE_ID') or None,
+                                'category_id': self.safe_int(deal.get('CATEGORY_ID'))
+                            }
+                            updates.append(deal_update)
+
+                        if updates:
+                            self.supabase.table('deals').upsert(updates).execute()
+                            logger.info(f"  ✅ Enriched {len(updates)} deals")
+            else:
+                logger.info("  ✅ All deals already enriched")
+
+        except Exception as e:
+            logger.error(f"  ❌ Error enriching records: {e}")
+            # Продолжаем работу даже если обогащение не удалось
 
 
 def main():
