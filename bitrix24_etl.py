@@ -631,6 +631,8 @@ class Bitrix24ETL:
                 deal_data = {
                     'id': self.safe_int(deal['ID']),
                     'title': deal.get('TITLE') or None,
+                    'type_id': deal.get('TYPE_ID') or None,
+                    'category_id': self.safe_int(deal.get('CATEGORY_ID')),
                     'stage_id': deal.get('STAGE_ID') or None,
                     'stage_semantic_id': deal.get('STAGE_SEMANTIC_ID') or None,
                     'opportunity': self.safe_float(deal.get('OPPORTUNITY')),
