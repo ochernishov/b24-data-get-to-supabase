@@ -17,24 +17,24 @@ services:
     networks:
       - etl-network
 
-  # Планировщик для регулярной синхронизации
-  bitrix24-scheduler:
-    image: alpine:latest
-    container_name: bitrix24-scheduler
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./logs:/logs
-    environment:
-      - CRON_SCHEDULE=${CRON_SCHEDULE:-0 */6 * * *}  # Каждые 6 часов по умолчанию
-    command: >
-      sh -c "
-      apk add --no-cache docker-cli dcron &&
-      echo '$${CRON_SCHEDULE} cd /app && docker-compose up bitrix24-etl' > /etc/crontabs/root &&
-      crond -f -l 2
-      "
-    restart: unless-stopped
-    networks:
-      - etl-network
+  # Планировщик для регулярной синхронизации (ОТКЛЮЧЕН - запускать вручную!)
+  # bitrix24-scheduler:
+  #   image: alpine:latest
+  #   container_name: bitrix24-scheduler
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #     - ./logs:/logs
+  #   environment:
+  #     - CRON_SCHEDULE=${CRON_SCHEDULE:-0 */6 * * *}  # Каждые 6 часов по умолчанию
+  #   command: >
+  #     sh -c "
+  #     apk add --no-cache docker-cli dcron &&
+  #     echo '$${CRON_SCHEDULE} cd /app && docker-compose up bitrix24-etl' > /etc/crontabs/root &&
+  #     crond -f -l 2
+  #     "
+  #   restart: unless-stopped
+  #   networks:
+  #     - etl-network
 
 networks:
   etl-network:
