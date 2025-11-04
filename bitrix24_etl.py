@@ -550,8 +550,13 @@ class Bitrix24ETL:
                     self.flush_companies()
                     self.flush_contacts()
                     self.flush_managers()
-                    self.supabase.table('deals').upsert(batch).execute()
-                    logger.info(f"  📊 Deals extracted: {processed}")
+                    try:
+                        response = self.supabase.table('deals').upsert(batch).execute()
+                        logger.info(f"  📊 Deals extracted: {processed}, inserted: {len(response.data) if response.data else 0}")
+                    except Exception as e:
+                        logger.error(f"  ❌ Error upserting deals batch: {e}")
+                        logger.error(f"  Sample deal data: {batch[0] if batch else 'empty'}")
+                        raise
                     batch = []
 
             if batch:
@@ -559,7 +564,13 @@ class Bitrix24ETL:
                 self.flush_companies()
                 self.flush_contacts()
                 self.flush_managers()
-                self.supabase.table('deals').upsert(batch).execute()
+                try:
+                    response = self.supabase.table('deals').upsert(batch).execute()
+                    logger.info(f"  ✅ Final batch inserted: {len(response.data) if response.data else 0} deals")
+                except Exception as e:
+                    logger.error(f"  ❌ Error upserting final deals batch: {e}")
+                    logger.error(f"  Sample deal data: {batch[0] if batch else 'empty'}")
+                    raise
 
             # Сохранить накопленные заглушки
             self.flush_companies()
