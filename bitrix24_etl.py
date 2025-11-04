@@ -53,6 +53,8 @@ class Bitrix24ETL:
         self.pending_managers = []  # Батч для вставки менеджеров
         self.created_companies = set()  # Кэш уже созданных компаний
         self.pending_companies = []  # Батч для вставки компаний
+        self.created_contacts = set()  # Кэш уже созданных контактов
+        self.pending_contacts = []  # Батч для вставки контактов
         
     # ==================== УТИЛИТЫ ====================
 
@@ -127,6 +129,47 @@ class Bitrix24ETL:
         except Exception as e:
             logger.error(f"  ❌ Error flushing companies: {e}")
             self.pending_companies = []
+
+    def ensure_contact_exists(self, contact_id: int):
+        """Добавить контакт-заглушку в батч (создание отложено до flush)"""
+        if not contact_id or contact_id in self.created_contacts:
+            return
+
+        contact_data = {
+            'id': contact_id,
+            'name': f'Contact {contact_id}',
+            'last_name': None,
+            'email': None,
+            'phone': None,
+            'post': None,
+            'birthdate': None,
+            'date_create': None,
+            'date_modify': None,
+            'company_id': None,
+            'assigned_by_id': None,
+            'created_by_id': None,
+            'source_id': None,
+            'source_description': None,
+            'raw_data': {'ID': contact_id, 'note': 'Auto-created stub for missing contact'}
+        }
+        self.pending_contacts.append(contact_data)
+        self.created_contacts.add(contact_id)
+
+    def flush_contacts(self):
+        """Вставить всех накопленных контактов-заглушек в базу"""
+        if not self.pending_contacts:
+            return
+
+        try:
+            # Батчами по 50
+            for i in range(0, len(self.pending_contacts), 50):
+                batch = self.pending_contacts[i:i+50]
+                self.supabase.table('contacts').upsert(batch).execute()
+            logger.info(f"  ✅ Flushed {len(self.pending_contacts)} contact stubs to DB")
+            self.pending_contacts = []
+        except Exception as e:
+            logger.error(f"  ❌ Error flushing contacts: {e}")
+            self.pending_contacts = []
 
     @staticmethod
     def safe_int(value: Any, default: Optional[int] = None) -> Optional[int]:
@@ -462,6 +505,14 @@ class Bitrix24ETL:
                 self.ensure_manager_exists(self.safe_int(deal.get('CREATED_BY_ID')))
                 self.ensure_manager_exists(self.safe_int(deal.get('MODIFY_BY_ID')))
 
+                # Создать компании/контакты если их нет в базе
+                company_id = self.safe_int(deal.get('COMPANY_ID'))
+                contact_id = self.safe_int(deal.get('CONTACT_ID'))
+                if company_id:
+                    self.ensure_company_exists(company_id)
+                if contact_id:
+                    self.ensure_contact_exists(contact_id)
+
                 deal_data = {
                     'id': self.safe_int(deal['ID']),
                     'title': deal.get('TITLE') or None,
@@ -493,16 +544,26 @@ class Bitrix24ETL:
                 
                 batch.append(deal_data)
                 processed += 1
-                
+
                 if len(batch) >= 50:
+                    # Флашим заглушки ПЕРЕД вставкой батча
+                    self.flush_companies()
+                    self.flush_contacts()
+                    self.flush_managers()
                     self.supabase.table('deals').upsert(batch).execute()
                     logger.info(f"  📊 Deals extracted: {processed}")
                     batch = []
-            
+
             if batch:
+                # Флашим заглушки ПЕРЕД вставкой остатка
+                self.flush_companies()
+                self.flush_contacts()
+                self.flush_managers()
                 self.supabase.table('deals').upsert(batch).execute()
 
-            # Сохранить всех накопленных менеджеров
+            # Сохранить накопленные заглушки
+            self.flush_companies()
+            self.flush_contacts()
             self.flush_managers()
 
             logger.info(f"  ✅ Deals extracted: {processed}")
