@@ -55,8 +55,39 @@ class Bitrix24ETL:
         self.pending_companies = []  # Батч для вставки компаний
         self.created_contacts = set()  # Кэш уже созданных контактов
         self.pending_contacts = []  # Батч для вставки контактов
-        
+
+        # Загрузить существующие ID из базы если пропускаем полную выгрузку
+        self.load_existing_ids()
+
     # ==================== УТИЛИТЫ ====================
+
+    def load_existing_ids(self):
+        """Загрузить все существующие ID из Supabase чтобы не создавать дубликаты"""
+        try:
+            # Загрузить ID компаний
+            logger.info("📋 Loading existing company IDs from Supabase...")
+            response = self.supabase.table('companies').select('id').execute()
+            if response.data:
+                self.created_companies = {row['id'] for row in response.data}
+                logger.info(f"  ✅ Loaded {len(self.created_companies)} existing company IDs")
+
+            # Загрузить ID контактов
+            logger.info("📋 Loading existing contact IDs from Supabase...")
+            response = self.supabase.table('contacts').select('id').execute()
+            if response.data:
+                self.created_contacts = {row['id'] for row in response.data}
+                logger.info(f"  ✅ Loaded {len(self.created_contacts)} existing contact IDs")
+
+            # Загрузить ID менеджеров
+            logger.info("📋 Loading existing manager IDs from Supabase...")
+            response = self.supabase.table('managers').select('id').execute()
+            if response.data:
+                self.created_managers = {row['id'] for row in response.data}
+                logger.info(f"  ✅ Loaded {len(self.created_managers)} existing manager IDs")
+
+        except Exception as e:
+            logger.warning(f"⚠️  Could not load existing IDs from Supabase: {e}")
+            logger.warning("  Continuing without cache - may create some duplicate stubs")
 
     def ensure_manager_exists(self, user_id: int):
         """Добавить менеджера в батч (создание отложено до flush)"""
@@ -369,8 +400,12 @@ class Bitrix24ETL:
                 self.created_companies.add(company_id)
 
                 # Создать менеджеров если их нет в базе
-                self.ensure_manager_exists(self.safe_int(company.get('ASSIGNED_BY_ID')))
-                self.ensure_manager_exists(self.safe_int(company.get('CREATED_BY_ID')))
+                assigned_by_id = self.safe_int(company.get('ASSIGNED_BY_ID'))
+                created_by_id = self.safe_int(company.get('CREATED_BY_ID'))
+                if assigned_by_id:
+                    self.ensure_manager_exists(assigned_by_id)
+                if created_by_id:
+                    self.ensure_manager_exists(created_by_id)
 
                 # EMAIL и PHONE приходят как массивы
                 email_value = None
@@ -391,8 +426,8 @@ class Bitrix24ETL:
                     'address': company.get('ADDRESS') or None,
                     'date_create': self.safe_datetime(company.get('DATE_CREATE')),
                     'date_modify': self.safe_datetime(company.get('DATE_MODIFY')),
-                    'assigned_by_id': self.safe_int(company.get('ASSIGNED_BY_ID')),
-                    'created_by_id': self.safe_int(company.get('CREATED_BY_ID')),
+                    'assigned_by_id': assigned_by_id if assigned_by_id else None,
+                    'created_by_id': created_by_id if created_by_id else None,
                     'raw_data': company
                 }
 
@@ -445,8 +480,12 @@ class Bitrix24ETL:
                     self.ensure_company_exists(company_id)
 
                 # Создать менеджеров если их нет
-                self.ensure_manager_exists(self.safe_int(contact.get('ASSIGNED_BY_ID')))
-                self.ensure_manager_exists(self.safe_int(contact.get('CREATED_BY_ID')))
+                assigned_by_id = self.safe_int(contact.get('ASSIGNED_BY_ID'))
+                created_by_id = self.safe_int(contact.get('CREATED_BY_ID'))
+                if assigned_by_id:
+                    self.ensure_manager_exists(assigned_by_id)
+                if created_by_id:
+                    self.ensure_manager_exists(created_by_id)
 
                 # EMAIL и PHONE приходят как массивы
                 email_value = None
@@ -558,10 +597,10 @@ class Bitrix24ETL:
                     'opportunity': self.safe_float(deal.get('OPPORTUNITY')),
                     'currency_id': deal.get('CURRENCY_ID') or 'RUB',
                     'tax_value': self.safe_float(deal.get('TAX_VALUE')),
-                    'company_id': self.safe_int(deal.get('COMPANY_ID')),
-                    'contact_id': self.safe_int(deal.get('CONTACT_ID')),
-                    'assigned_by_id': self.safe_int(deal.get('ASSIGNED_BY_ID')),
-                    'created_by_id': self.safe_int(deal.get('CREATED_BY_ID')),
+                    'company_id': company_id if company_id else None,
+                    'contact_id': contact_id if contact_id else None,
+                    'assigned_by_id': self.safe_int(deal.get('ASSIGNED_BY_ID')) or None,
+                    'created_by_id': self.safe_int(deal.get('CREATED_BY_ID')) or None,
                     'closed': self.safe_bool(deal.get('CLOSED')),
                     'begindate': self.safe_datetime(deal.get('BEGINDATE')),
                     'closedate': self.safe_datetime(deal.get('CLOSEDATE')),
