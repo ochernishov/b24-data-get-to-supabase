@@ -578,25 +578,43 @@ class Bitrix24ETL:
             return processed
     
     def extract_deals(self) -> int:
-        """Извлечь сделки"""
+        """Извлечь сделки (streaming - вставка во время загрузки)"""
         logger.info("📥 Extracting deals...")
         sync_id = self.log_sync_start('deals')
-        
+
         processed = 0
+        batch = []
+
         try:
             params = {}
-            
+
             if SYNC_MODE == 'incremental':
                 cutoff_time = (datetime.utcnow() - timedelta(hours=HOURS_BACK)).isoformat()
                 params['filter'] = {'>DATE_MODIFY': cutoff_time}
 
-            logger.info("  🔄 Calling bitrix_request for deals...")
-            deals = self.bitrix_request('crm.deal.list', params)
-            logger.info(f"  ✅ Got {len(deals)} deals from Bitrix24, starting processing...")
+            logger.info("  🔄 Starting streaming deals extraction...")
 
-            batch = []
+            # STREAMING: грузим и вставляем постранично, БЕЗ накопления в память
+            start = 0
+            page = 0
 
-            for deal in deals:
+            while True:
+                page += 1
+                request_params = {**params, 'start': start}
+                url = f"{self.bitrix_url}crm.deal.list.json"
+
+                time.sleep(self.rate_limit_delay)
+                response = requests.get(url, params=request_params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                if 'result' not in data or not data['result']:
+                    break
+
+                deals_page = data['result']
+                logger.info(f"  📄 Page {page}: processing {len(deals_page)} deals...")
+
+                for deal in deals_page:
                 # Создать менеджеров если их нет в базе
                 self.ensure_manager_exists(self.safe_int(deal.get('ASSIGNED_BY_ID')))
                 self.ensure_manager_exists(self.safe_int(deal.get('CREATED_BY_ID')))
@@ -640,19 +658,36 @@ class Bitrix24ETL:
                 batch.append(deal_data)
                 processed += 1
 
-                if len(batch) >= 50:
-                    # Флашим заглушки ПЕРЕД вставкой батча
-                    self.flush_companies()
-                    self.flush_contacts()
-                    self.flush_managers()
-                    try:
-                        response = self.supabase.table('deals').upsert(batch).execute()
-                        logger.info(f"  📊 Deals extracted: {processed}, inserted: {len(response.data) if response.data else 0}")
-                    except Exception as e:
-                        logger.error(f"  ❌ Error upserting deals batch: {e}")
-                        logger.error(f"  Sample deal data: {batch[0] if batch else 'empty'}")
-                        raise
-                    batch = []
+                    if len(batch) >= 50:
+                        # Флашим заглушки ПЕРЕД вставкой батча
+                        self.flush_companies()
+                        self.flush_contacts()
+                        self.flush_managers()
+                        try:
+                            response = self.supabase.table('deals').upsert(batch).execute()
+                            logger.info(f"  📊 Deals extracted: {processed}, inserted: {len(response.data) if response.data else 0}")
+                        except Exception as e:
+                            logger.error(f"  ❌ Error upserting deals batch: {e}")
+                            logger.error(f"  Sample deal data: {batch[0] if batch else 'empty'}")
+                            raise
+                        batch = []
+
+                # Проверка условий выхода
+                if len(deals_page) < 50:
+                    logger.info(f"  🛑 Got less than 50 results ({len(deals_page)}), stopping pagination")
+                    break
+
+                total = data.get('total', 0)
+                if total > 0 and processed >= total:
+                    logger.info(f"  🛑 Loaded all {total} records, stopping pagination")
+                    break
+
+                # EMERGENCY: защита от бесконечного цикла
+                if processed >= 50000:
+                    logger.warning(f"  ⚠️  EMERGENCY BREAK at {processed} records!")
+                    break
+
+                start += 50
 
             if batch:
                 # Флашим заглушки ПЕРЕД вставкой остатка
